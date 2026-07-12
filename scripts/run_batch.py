@@ -57,9 +57,14 @@ def _latest_run_dir(output_root: Path) -> Path | None:
     return reports[-1].parent if reports else None
 
 
-def run_one(config_path: Path, wall_seconds: int, workers: int) -> bool:
+def run_one(config_path: Path, wall_seconds: int, workers: Optional[int]) -> bool:
     data = json.loads(config_path.read_text(encoding="utf-8"))
-    data.setdefault("evaluation", {})["parallel_workers"] = workers
+    data.setdefault("evaluation", {})
+    # Only override when --workers was given explicitly; otherwise respect the
+    # config (the all-on profile pins parallel_workers to 1). Default to 1 serial.
+    if workers is not None:
+        data["evaluation"]["parallel_workers"] = workers
+    effective_workers = int(data["evaluation"].get("parallel_workers", 1) or 1)
     patched = config_path.with_suffix(".effective.json")
     patched.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
@@ -87,7 +92,7 @@ def run_one(config_path: Path, wall_seconds: int, workers: int) -> bool:
     run_dir = _latest_run_dir(output_root)
     parts = _name_parts(config_path.stem)
     meta = {**parts, "config": config_path.name, "wall_hit": wall_hit,
-            "runner": _runner_block()}
+            "parallel_workers": effective_workers, "runner": _runner_block()}
     if run_dir is not None:
         (run_dir / "run_meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
         report = run_dir / "report.json"
@@ -95,6 +100,9 @@ def run_one(config_path: Path, wall_seconds: int, workers: int) -> bool:
             try:
                 rj = json.loads(report.read_text(encoding="utf-8"))
                 rj["runner"] = _runner_block()
+                # Record the worker count unconditionally (the GA only records it
+                # when > 1), so a serial run is verifiable, not just implied.
+                rj["parallel_workers"] = effective_workers
                 report.write_text(json.dumps(rj, indent=2), encoding="utf-8")
             except Exception:
                 pass
@@ -108,11 +116,11 @@ def main() -> None:
     ap.add_argument("--glob", default="*.json",
                     help="config filename glob (default '*.json')")
     ap.add_argument("--workers", type=int, default=None,
-                    help="parallel workers per config; default min(4, cpu_count). "
-                         "Pass 1 for serial timing runs matching the paper's local batch.")
+                    help="parallel workers per config. Default: respect the "
+                         "config (the all-on profile pins this to 1 = serial). "
+                         "Pass a number to override for all configs.")
     args = ap.parse_args()
 
-    workers = args.workers if args.workers is not None else min(4, os.cpu_count() or 1)
     configs = sorted(p for p in Path(args.configs_dir).glob(args.glob)
                      if not p.name.endswith(".effective.json"))
     if not configs:
@@ -123,11 +131,12 @@ def main() -> None:
     # --wall-minutes 0 disables the guard: runs go to completion (timing mode).
     per_config = int(args.wall_minutes * 60 / len(configs))
     budget = f"{per_config}s wall budget each" if per_config > 0 else "no wall guard (runs to completion)"
-    print(f"[run_batch] {len(configs)} configs, {workers} workers, {budget}")
+    wpol = f"{args.workers} workers (override)" if args.workers is not None else "workers from config (serial)"
+    print(f"[run_batch] {len(configs)} configs, {wpol}, {budget}")
 
     completed = 0
     for cfg in configs:
-        ok = run_one(cfg, per_config, workers)
+        ok = run_one(cfg, per_config, args.workers)
         completed += int(ok)
         print(f"[run_batch] {cfg.name}: {'complete' if ok else 'wall-stopped (resumable)'}")
     print(f"[run_batch] {completed}/{len(configs)} finished without hitting the guard")

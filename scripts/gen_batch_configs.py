@@ -47,6 +47,7 @@ ALL_ON = {
     "evaluation": {
         "trace_check_timeout_sec": 3600,
         "cache_enabled": True,
+        "parallel_workers": 1,   # serial: one worker per experiment
     },
     "heuristics": {
         "interval_inference": {
