@@ -14,6 +14,8 @@ outputs/
 stats/
 artifacts/
 payload/
+# Downloaded CI artifacts (local inspection only)
+online_results/
 
 # Verdict caches
 *.sqlite

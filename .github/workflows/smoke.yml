@@ -42,7 +42,10 @@ jobs:
           mkdir -p "$SHARE"
           curl -fsSL -o "$SHARE/weka-stable-${WEKA_VERSION}.jar" "$WEKA_URL"
           echo "${WEKA_SHA256}  $SHARE/weka-stable-${WEKA_VERSION}.jar" | sha256sum -c -
-          echo "WEKA_JAR=$SHARE/weka-stable-${WEKA_VERSION}.jar" >> "$GITHUB_ENV"
+          # Place vendored bounce.jar next to the weka jar so the tests' classpath
+          # helper (which appends share/weka/bounce.jar) and WEKA_JAR both find it.
+          cp "$GITHUB_WORKSPACE/third_party/bounce.jar" "$SHARE/bounce.jar"
+          echo "WEKA_JAR=$SHARE/weka-stable-${WEKA_VERSION}.jar:$SHARE/bounce.jar" >> "$GITHUB_ENV"
 
       - name: Unit tests (includes golden parity end-to-end)
         run: python -m pytest -q
@@ -60,5 +63,5 @@ jobs:
           c["ga"]["stopping"]["max_samples"] = 12
           p.write_text(json.dumps(c, indent=2))
           PY
-          python scripts/run_batch.py --configs-dir configs/smoke --wall-minutes 5
+          python scripts/run_batch.py --configs-dir configs/smoke --wall-minutes 5 --workers 1
           test -n "$(find outputs -name report.json)" && echo "end-to-end produced report.json"

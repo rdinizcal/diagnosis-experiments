@@ -79,20 +79,29 @@ gh run download <aggregate_run_id>   # diagnosis-statistics
 
 ## Notes
 
-- **Determinism.** The seed comes only from the config. `run_batch.py` sets
-  `parallel_workers = min(4, cpu_count)`; worker count does not affect results
-  (batch results are applied in population-index order). Runner hardware is
-  recorded in each `report.json` under `runner`.
+- **Determinism.** The seed comes only from the config. `batch.yml` runs with
+  `--workers 1` (serial), so nothing varies with the runner; worker count does
+  not affect results in any case (batch results are applied in population-index
+  order). Runner hardware is recorded in each `report.json` under `runner`.
 - **Artifacts.** Each `diagnosis-run-*` contains `report.json`, `summary.json`,
   `run_meta.json`, final ARFFs, J48 `.out`, stopping/`hypot` logs, and
   `inference_state.json`. Bulky per-generation population dumps are excluded.
   Retention: 30 days.
 - **Resume.** Re-dispatching a failed cell with the same cache key resumes from
   the restored verdict cache; steps are idempotent.
+- **Weka needs bounce.jar.** The Maven `weka-stable-3.8.6.jar` does not bundle
+  `org.bounce`, and Weka's package manager references it, so J48 dies with
+  `NoClassDefFoundError` and produces no tree unless `third_party/bounce.jar`
+  (vendored) is on `WEKA_JAR`. The workflows add it automatically; keep it when
+  editing the Weka step. See `third_party/README.md`.
 - **Weka checksum.** To refresh:
   ```bash
   curl -fsSL -o weka.jar \
     https://repo1.maven.org/maven2/nz/ac/waikato/cms/weka/weka-stable/3.8.6/weka-stable-3.8.6.jar
   sha256sum weka.jar
   ```
+- **Solve-heavy subjects (CC).** CC requirements can need the 600 s high tier
+  even locally; on slower runners those SAT solves time out to UNDECIDED, so a
+  CC cell may show 0 SAT. Raise `two_tier_timeout.high_sec` (<= trace timeout)
+  in `scripts/gen_batch_configs.py` for CI, or run CC locally with no wall guard.
 - **Timing.** No timing claim in the paper is derived from CI.

@@ -57,7 +57,7 @@ ALL_ON = {
         "two_tier_timeout": {
             "enabled": True,
             "low_sec": 60,
-            "high_sec": 600,
+            "high_sec": 3000,   # <= evaluation.trace_check_timeout_sec (3600)
             "escalation": "once_per_formula",
         },
         "adaptive_range": {

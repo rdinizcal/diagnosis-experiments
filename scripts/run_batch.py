@@ -107,9 +107,12 @@ def main() -> None:
     ap.add_argument("--wall-minutes", type=float, default=330)
     ap.add_argument("--glob", default="*.json",
                     help="config filename glob (default '*.json')")
+    ap.add_argument("--workers", type=int, default=None,
+                    help="parallel workers per config; default min(4, cpu_count). "
+                         "Pass 1 for serial timing runs matching the paper's local batch.")
     args = ap.parse_args()
 
-    workers = min(4, os.cpu_count() or 1)
+    workers = args.workers if args.workers is not None else min(4, os.cpu_count() or 1)
     configs = sorted(p for p in Path(args.configs_dir).glob(args.glob)
                      if not p.name.endswith(".effective.json"))
     if not configs:
@@ -117,9 +120,10 @@ def main() -> None:
         return
 
     # Split the wall budget across configs so the whole job finishes under cap.
+    # --wall-minutes 0 disables the guard: runs go to completion (timing mode).
     per_config = int(args.wall_minutes * 60 / len(configs))
-    print(f"[run_batch] {len(configs)} configs, {workers} workers, "
-          f"{per_config}s wall budget each")
+    budget = f"{per_config}s wall budget each" if per_config > 0 else "no wall guard (runs to completion)"
+    print(f"[run_batch] {len(configs)} configs, {workers} workers, {budget}")
 
     completed = 0
     for cfg in configs:
