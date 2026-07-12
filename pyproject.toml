@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "diagnosis"
+version = "1.0.0"
+description = "Genetic algorithm-based HLS requirement mutation and diagnostics"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { file = "LICENSE" }
+authors = [
+  { name = "Gabriel Araujo" },
+  { name = "Ricardo Caldas" },
+  { name = "Federico Formica"}
+]
+
+dependencies = [
+  "numpy",
+  "matplotlib",
+  "scipy",
+  "z3-solver==4.15.4.0",
+  "tqdm"
+]
+
+[project.urls]
+"Homepage" = "https://github.com/rdinizcal/Diagnosis"
+
+[project.scripts]
+diagnosis = "diagnosis.cli:main"
+
+[tool.setuptools]
+packages = ["diagnosis", "diagnosis.lang", "diagnosis.mutation", "diagnosis.diagnostics"]
+[tool.setuptools.package-dir]
+diagnosis = "diagnosis"

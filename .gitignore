@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+
+# macOS
+.DS_Store
+*/.DS_Store
+
+# Packaging
+*.egg-info/
+
+# Generated configs and run outputs
+configs/
+outputs/
+stats/
+artifacts/
+payload/
+
+# Verdict caches
+*.sqlite

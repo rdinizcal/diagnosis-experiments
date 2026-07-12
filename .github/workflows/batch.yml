@@ -1,0 +1,131 @@
+name: batch
+
+# Runs the evaluation batch. One matrix cell per (subject, seed); each cell
+# generates and runs that subject's exp1 + exp3 with the all-on profile and
+# uploads a resumable artifact. Timing is NOT a paper result (see README).
+on:
+  workflow_dispatch:
+    inputs:
+      seeds:
+        description: "Comma-separated seed list"
+        default: "0"
+      subjects:
+        description: "'all' or comma-separated subject list"
+        default: "all"
+      wall_minutes:
+        description: "Internal wall-guard budget per cell (minutes)"
+        default: "330"
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.11"
+  WEKA_VERSION: "3.8.6"
+  # weka-stable jar on Maven Central; pinned sha256 verified below.
+  WEKA_URL: "https://repo1.maven.org/maven2/nz/ac/waikato/cms/weka/weka-stable/3.8.6/weka-stable-3.8.6.jar"
+  # sha256 of the Maven Central weka-stable-3.8.6.jar. Confirm on the first
+  # canary run and update here if it ever fails (see RUNBOOK "Weka checksum").
+  WEKA_SHA256: "932ea2f342b58fe45736389e9c426d5b5955e610d1f5f6485117f532068915e9"
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.build.outputs.matrix }}
+    steps:
+      - id: build
+        shell: python
+        run: |
+          import json, os
+          seeds = [s.strip() for s in os.environ["SEEDS"].split(",") if s.strip()]
+          subj_in = os.environ["SUBJECTS"].strip()
+          all_subjects = ["AT1","AT2","AT51","AT52","AT53","AT54",
+                          "AT6A","AT6B","AT6C","AT6ABC",
+                          "CC1","CC2","CC3","CC4","CC5","CCX"]
+          subjects = all_subjects if subj_in == "all" else [s.strip() for s in subj_in.split(",")]
+          include = [{"subject": s, "seed": seed} for s in subjects for seed in seeds]
+          matrix = {"include": include}
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write("matrix=" + json.dumps(matrix) + "\n")
+          print(json.dumps(matrix, indent=2))
+        env:
+          SEEDS: ${{ inputs.seeds }}
+          SUBJECTS: ${{ inputs.subjects }}
+
+  run:
+    needs: setup
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix: ${{ fromJson(needs.setup.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install package (pinned deps from pyproject)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Fetch Weka (pinned, checksum-verified)
+        run: |
+          mkdir -p "$HOME/weka"
+          curl -fsSL -o "$HOME/weka/weka-stable-${WEKA_VERSION}.jar" "$WEKA_URL"
+          echo "${WEKA_SHA256}  $HOME/weka/weka-stable-${WEKA_VERSION}.jar" | sha256sum -c -
+          echo "WEKA_JAR=$HOME/weka/weka-stable-${WEKA_VERSION}.jar" >> "$GITHUB_ENV"
+
+      - name: Restore verdict cache (resume mechanism)
+        uses: actions/cache@v4
+        with:
+          path: outputs
+          key: diagnosis-cache-${{ matrix.subject }}-${{ matrix.seed }}-v1
+          restore-keys: |
+            diagnosis-cache-${{ matrix.subject }}-${{ matrix.seed }}-
+
+      - name: Generate configs for this cell
+        run: |
+          python scripts/gen_batch_configs.py \
+            --seeds "${{ matrix.seed }}" \
+            --subjects "${{ matrix.subject }}" \
+            --out "configs/${{ matrix.subject }}_s${{ matrix.seed }}"
+
+      - name: Run under wall guard
+        run: |
+          python scripts/run_batch.py \
+            --configs-dir "configs/${{ matrix.subject }}_s${{ matrix.seed }}" \
+            --wall-minutes "${{ inputs.wall_minutes }}"
+
+      - name: Collect artifact payload
+        run: |
+          mkdir -p payload
+          # Keep report.json, summary.json, run_meta.json, final ARFFs, J48 .out,
+          # stopping-check logs. Exclude bulky per-generation population dumps.
+          find outputs -type f \( \
+              -name 'report.json' -o -name 'summary.json' -o -name 'run_meta.json' \
+              -o -name '*.out' -o -name '*.arff' -o -name 'inference_state.json' \
+              -o -name '*stopping*' -o -name 'hypot.txt' \) \
+            -print0 | rsync -0 -R --files-from=- . payload/ 2>/dev/null || \
+            (cd outputs && find . -type f \( \
+                -name 'report.json' -o -name 'summary.json' -o -name 'run_meta.json' \
+                -o -name '*.out' -o -name '*.arff' -o -name 'inference_state.json' \
+                -o -name '*stopping*' \) \
+              -exec bash -c 'mkdir -p "../payload/$(dirname "{}")"; cp "{}" "../payload/{}"' \;)
+
+      - name: Upload run artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnosis-run-${{ matrix.subject }}-s${{ matrix.seed }}
+          path: payload
+          retention-days: 30
+          if-no-files-found: warn

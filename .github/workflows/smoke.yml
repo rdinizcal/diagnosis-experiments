@@ -1,0 +1,64 @@
+name: smoke
+
+# Keeps the repo green: unit tests plus one short end-to-end run on every push
+# and PR. Not a timing benchmark.
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  WEKA_VERSION: "3.8.6"
+  WEKA_URL: "https://repo1.maven.org/maven2/nz/ac/waikato/cms/weka/weka-stable/3.8.6/weka-stable-3.8.6.jar"
+  WEKA_SHA256: "932ea2f342b58fe45736389e9c426d5b5955e610d1f5f6485117f532068915e9"
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: py
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install package + pytest
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e . pytest
+
+      - name: Fetch Weka into the venv share dir (where the tests look)
+        run: |
+          SHARE="$(python -c 'import sys,os; print(os.path.join(os.path.dirname(os.path.dirname(sys.executable)), "share", "weka"))')"
+          mkdir -p "$SHARE"
+          curl -fsSL -o "$SHARE/weka-stable-${WEKA_VERSION}.jar" "$WEKA_URL"
+          echo "${WEKA_SHA256}  $SHARE/weka-stable-${WEKA_VERSION}.jar" | sha256sum -c -
+          echo "WEKA_JAR=$SHARE/weka-stable-${WEKA_VERSION}.jar" >> "$GITHUB_ENV"
+
+      - name: Unit tests (includes golden parity end-to-end)
+        run: python -m pytest -q
+
+      - name: One short end-to-end config
+        run: |
+          python scripts/gen_batch_configs.py --seeds 0 --subjects AT1 --out configs/smoke
+          # Shrink the budget to keep this step near two minutes.
+          python - <<'PY'
+          import json, pathlib
+          p = pathlib.Path("configs/smoke/AT1_exp1_s0.json")
+          c = json.loads(p.read_text())
+          c["ga"]["generations"] = 3
+          c["ga"]["population_size"] = 5
+          c["ga"]["stopping"]["max_samples"] = 12
+          p.write_text(json.dumps(c, indent=2))
+          PY
+          python scripts/run_batch.py --configs-dir configs/smoke --wall-minutes 5
+          test -n "$(find outputs -name report.json)" && echo "end-to-end produced report.json"
