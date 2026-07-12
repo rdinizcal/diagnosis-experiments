@@ -28,7 +28,7 @@ git push -u origin main
 
 ```bash
 gh api -X PUT repos/<owner>/diagnosis-experiments/actions/permissions \
-  -f enabled=true -f allowed_actions=all
+  -F enabled=true -f allowed_actions=all   # -F sends enabled as a boolean
 ```
 (or Settings → Actions → General → Allow all actions, in the web UI.)
 
