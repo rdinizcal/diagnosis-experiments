@@ -87,8 +87,11 @@ gh run download <aggregate_run_id>   # diagnosis-statistics
   `run_meta.json`, final ARFFs, J48 `.out`, stopping/`hypot` logs, and
   `inference_state.json`. Bulky per-generation population dumps are excluded.
   Retention: 30 days.
-- **Resume.** Re-dispatching a failed cell with the same cache key resumes from
-  the restored verdict cache; steps are idempotent.
+- **Re-dispatch is a fresh run.** There is no cross-dispatch resume: the verdict
+  cache lives inside each timestamped run dir, so re-running a cell recomputes it
+  from scratch. Runs are bounded by `max_samples` / `cv_pr` stopping, so they
+  terminate; a wall-stopped cell is simply re-run in full. (Aggregation keeps
+  only the newest run per subject/seed, so a re-run supersedes an earlier one.)
 - **Weka needs bounce.jar.** The Maven `weka-stable-3.8.6.jar` does not bundle
   `org.bounce`, and Weka's package manager references it, so J48 dies with
   `NoClassDefFoundError` and produces no tree unless `third_party/bounce.jar`

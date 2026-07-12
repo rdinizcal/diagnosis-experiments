@@ -89,6 +89,13 @@ class RunRecord:
         self.summary = _read_json(run_dir / "summary.json") or {}
         self.meta = _read_json(run_dir / "run_meta.json")
         self.experiment = _experiment_id(run_dir, self.meta)
+        self.seed = (self.meta or {}).get("seed")
+        if self.seed is None:
+            m = re.search(r"_s(\d+)", str(run_dir))
+            self.seed = int(m.group(1)) if m else None
+        # Run directories are timestamped (YYYY-MM-DD_HH_MM_SS...), so the dir
+        # name sorts chronologically; used to keep only the newest attempt.
+        self.stamp = run_dir.name
 
         out = _pick_tree_out(run_dir)
         text = out.read_text(encoding="utf-8", errors="replace") if out else ""
@@ -117,9 +124,27 @@ class RunRecord:
         return m.group(1) if m else None
 
 
+def _dedupe_latest(records: list["RunRecord"]) -> tuple[list["RunRecord"], int]:
+    """Keep one run per (experiment, seed): the newest timestamp. The CI cache
+    can restore stale run dirs from earlier batches, so a config may appear more
+    than once; only the most recent attempt should be counted."""
+    latest: dict[tuple, "RunRecord"] = {}
+    for r in records:
+        key = (r.experiment, r.seed)
+        cur = latest.get(key)
+        if cur is None or r.stamp > cur.stamp:
+            latest[key] = r
+    kept = list(latest.values())
+    return kept, len(records) - len(kept)
+
+
 def aggregate(runs_dir: Path, out_dir: Path) -> str:
     run_dirs = sorted({p.parent for p in runs_dir.rglob("report.json")})
     records = [RunRecord(d) for d in run_dirs]
+    records, dropped = _dedupe_latest(records)
+    if dropped:
+        print(f"[aggregate] dropped {dropped} stale duplicate run(s); "
+              f"kept newest per (experiment, seed)")
     by_exp: dict[str, list[RunRecord]] = defaultdict(list)
     for r in records:
         by_exp[r.experiment].append(r)

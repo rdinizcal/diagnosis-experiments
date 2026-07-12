@@ -2,7 +2,7 @@ name: batch
 
 # Runs the evaluation batch. One matrix cell per (subject, seed); each cell
 # generates and runs that subject's exp1 + exp3 with the all-on profile and
-# uploads a resumable artifact. Timing is NOT a paper result (see README).
+# uploads a self-contained artifact. Timing is NOT a paper result (see README).
 on:
   workflow_dispatch:
     inputs:
@@ -87,13 +87,10 @@ jobs:
           # otherwise J48 dies with NoClassDefFoundError and no tree is produced.
           echo "WEKA_JAR=$HOME/weka/weka-stable-${WEKA_VERSION}.jar:$GITHUB_WORKSPACE/third_party/bounce.jar" >> "$GITHUB_ENV"
 
-      - name: Restore verdict cache (resume mechanism)
-        uses: actions/cache@v4
-        with:
-          path: outputs
-          key: diagnosis-cache-${{ matrix.subject }}-${{ matrix.seed }}-v1
-          restore-keys: |
-            diagnosis-cache-${{ matrix.subject }}-${{ matrix.seed }}-
+      # No outputs cache: the verdict cache is written inside each timestamped
+      # run dir, so it is never reused across runs; caching outputs/ only dragged
+      # stale run dirs from earlier batches into new artifacts. Each dispatch is
+      # a fresh, self-contained run on an ephemeral runner.
 
       - name: Generate configs for this cell
         run: |
