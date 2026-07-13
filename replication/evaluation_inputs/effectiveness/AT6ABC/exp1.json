@@ -19,20 +19,20 @@
     "enable_logical_flip": false,
     "enable_quantifier_flip": false,
     "allowed_positions": [
-      51,
-      14
+      64,
+      76
     ],
     "allowed_changes": {
-      "51": {
-        "numeric": [
-          50.0,
-          80.0
-        ]
-      },
-      "14": {
+      "64": {
         "numeric": [
           2800.0,
           3200.0
+        ]
+      },
+      "76": {
+        "numeric": [
+          50.0,
+          80.0
         ]
       }
     }
