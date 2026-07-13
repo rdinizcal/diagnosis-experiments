@@ -49,16 +49,37 @@ from the pinned hash: download it, recompute, and update `WEKA_SHA256` in both
 ## 4. Full batch
 
 ```bash
-gh workflow run batch.yml -f seeds=0 -f subjects=all -f wall_minutes=330
+gh workflow run batch.yml -f seeds=0 -f subjects=all -f wall_minutes=340
 # multiple seeds:
-gh workflow run batch.yml -f seeds=0,1,2,3,4 -f subjects=all -f wall_minutes=330
+gh workflow run batch.yml -f seeds=0,1,2,3,4 -f subjects=all -f wall_minutes=340
 ```
 
-Matrix = subjects x seeds, `max-parallel: 20`, `timeout-minutes: 355` (under the
-6-hour hosted-runner cap). Each cell runs the subject's exp1 + exp3 under an
-internal wall guard (`wall_minutes`) that leaves a resumable state before the
-runner cap; the SQLite verdict cache (restored via `actions/cache`) makes a
-re-run of the same cell resume rather than restart.
+Matrix = **subject x exp x seed** (one experiment per cell), `max-parallel: 20`,
+`timeout-minutes: 355` (under the 6-hour hosted-runner cap). Each cell runs a
+single experiment under the internal wall guard, so every experiment gets the
+**full** `wall_minutes` budget (not half of it shared with the other exp).
+
+## 4b. Re-run only the experiments that did not finish
+
+Some experiments (esp. the solve-heavy CC family) can exceed the runner cap.
+To find and re-run exactly those:
+
+```bash
+# 1. Download the batch artifacts (see step 6), then classify them:
+python scripts/find_unfinished.py --runs-dir online_results --seeds 0,1,2,3,4
+#   -> prints a `cells=SUBJECT:exp:seed,...` line for MISSING/WALL/crashed cells,
+#      and separately lists degenerate one-class cells (a config fix, not a re-run).
+
+# 2. Re-dispatch just those cells with the full per-experiment budget:
+gh workflow run batch.yml -f cells="CC1:exp1:0,CC1:exp3:0,CC2:exp1:0,..." -f wall_minutes=340
+```
+
+`cells` overrides subjects/seeds/exps. Each listed experiment runs in its own
+cell with up to `wall_minutes` (≤355) of solver time. If an experiment still
+does not finish at `wall_minutes=340`, it needs more time than a hosted runner
+allows — run that one locally with no wall guard (README "Running locally",
+`run_batch.py --wall-minutes 0`). Re-runs supersede earlier ones: the analysis
+scripts keep only the newest run per (subject, exp, seed).
 
 ## 5. Aggregate
 
@@ -87,11 +108,16 @@ gh run download <aggregate_run_id>   # diagnosis-statistics
   `run_meta.json`, final ARFFs, J48 `.out`, stopping/`hypot` logs, and
   `inference_state.json`. Bulky per-generation population dumps are excluded.
   Retention: 30 days.
-- **Re-dispatch is a fresh run.** There is no cross-dispatch resume: the verdict
-  cache lives inside each timestamped run dir, so re-running a cell recomputes it
-  from scratch. Runs are bounded by `max_samples` / `cv_pr` stopping, so they
-  terminate; a wall-stopped cell is simply re-run in full. (Aggregation keeps
-  only the newest run per subject/seed, so a re-run supersedes an earlier one.)
+- **Resume via the verdict cache.** `batch.yml` passes `--cache-dir vcache`, which
+  pins the verdict cache to a stable file (`evaluation.cache_path`) that
+  `actions/cache` restores/saves per cell (run-id key + prefix restore-keys, so
+  each dispatch saves an updated cache). Re-dispatching a wall-stopped experiment
+  replays already-solved candidates from cache and advances further each time
+  until it completes. Aggregation keeps only the newest run per (subject, exp,
+  seed), so a completed re-run supersedes the wall-stopped one. Note: a resumed
+  run reuses cached *verdicts* (each is the verdict a solve would return); for a
+  strictly single-shot reproduction of a seed, run it locally with
+  `run_batch.py --wall-minutes 0` and no `--cache-dir`.
 - **Weka needs bounce.jar.** The Maven `weka-stable-3.8.6.jar` does not bundle
   `org.bounce`, and Weka's package manager references it, so J48 dies with
   `NoClassDefFoundError` and produces no tree unless `third_party/bounce.jar`

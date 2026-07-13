@@ -77,6 +77,7 @@ def build_ga_from_config(cfg: Config) -> GA:
         cache_enabled=cfg.evaluation.cache_enabled,
         engine=cfg.evaluation.engine,
         parallel_workers=cfg.evaluation.parallel_workers,
+        cache_path=cfg.evaluation.cache_path,
         stopping_config=cfg.ga.stopping,
         heuristics_config=cfg.heuristics,
     )

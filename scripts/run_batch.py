@@ -57,7 +57,8 @@ def _latest_run_dir(output_root: Path) -> Path | None:
     return reports[-1].parent if reports else None
 
 
-def run_one(config_path: Path, wall_seconds: int, workers: Optional[int]) -> bool:
+def run_one(config_path: Path, wall_seconds: int, workers: Optional[int],
+            cache_dir: Optional[str] = None) -> bool:
     data = json.loads(config_path.read_text(encoding="utf-8"))
     data.setdefault("evaluation", {})
     # Only override when --workers was given explicitly; otherwise respect the
@@ -65,6 +66,11 @@ def run_one(config_path: Path, wall_seconds: int, workers: Optional[int]) -> boo
     if workers is not None:
         data["evaluation"]["parallel_workers"] = workers
     effective_workers = int(data["evaluation"].get("parallel_workers", 1) or 1)
+    # Stable verdict-cache path enables resume: a re-run restores this file and
+    # already-solved candidates return from cache instead of re-solving.
+    if cache_dir:
+        os.makedirs(cache_dir, exist_ok=True)
+        data["evaluation"]["cache_path"] = os.path.join(cache_dir, config_path.stem + ".sqlite")
     patched = config_path.with_suffix(".effective.json")
     patched.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
@@ -119,6 +125,9 @@ def main() -> None:
                     help="parallel workers per config. Default: respect the "
                          "config (the all-on profile pins this to 1 = serial). "
                          "Pass a number to override for all configs.")
+    ap.add_argument("--cache-dir", default=None,
+                    help="directory for a stable per-experiment verdict cache; "
+                         "restore/save it across dispatches to resume runs.")
     args = ap.parse_args()
 
     configs = sorted(p for p in Path(args.configs_dir).glob(args.glob)
@@ -136,7 +145,7 @@ def main() -> None:
 
     completed = 0
     for cfg in configs:
-        ok = run_one(cfg, per_config, args.workers)
+        ok = run_one(cfg, per_config, args.workers, cache_dir=args.cache_dir)
         completed += int(ok)
         print(f"[run_batch] {cfg.name}: {'complete' if ok else 'wall-stopped (resumable)'}")
     print(f"[run_batch] {completed}/{len(configs)} finished without hitting the guard")

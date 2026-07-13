@@ -1,20 +1,27 @@
 name: batch
 
-# Runs the evaluation batch. One matrix cell per (subject, seed); each cell
-# generates and runs that subject's exp1 + exp3 with the all-on profile and
-# uploads a self-contained artifact. Timing is NOT a paper result (see README).
+# One matrix cell per (subject, exp, seed): each cell runs a single experiment
+# with the full runner budget and uploads a self-contained artifact. Use the
+# `cells` input to re-run only specific experiments (e.g. ones that did not
+# finish) — see scripts/find_unfinished.py. Timing is NOT a paper result.
 on:
   workflow_dispatch:
     inputs:
       seeds:
-        description: "Comma-separated seed list"
+        description: "Comma-separated seed list (full-run mode)"
         default: "0"
       subjects:
-        description: "'all' or comma-separated subject list"
+        description: "'all' or comma-separated subject list (full-run mode)"
         default: "all"
+      exps:
+        description: "Comma-separated experiment list (full-run mode)"
+        default: "exp1,exp3"
+      cells:
+        description: "Targeted re-run: comma list of SUBJECT:exp:seed. Overrides subjects/seeds/exps when set."
+        default: ""
       wall_minutes:
-        description: "Internal wall-guard budget per cell (minutes)"
-        default: "330"
+        description: "Internal wall-guard budget per experiment (minutes; <355)"
+        default: "340"
 
 permissions:
   contents: read
@@ -22,10 +29,7 @@ permissions:
 env:
   PYTHON_VERSION: "3.11"
   WEKA_VERSION: "3.8.6"
-  # weka-stable jar on Maven Central; pinned sha256 verified below.
   WEKA_URL: "https://repo1.maven.org/maven2/nz/ac/waikato/cms/weka/weka-stable/3.8.6/weka-stable-3.8.6.jar"
-  # sha256 of the Maven Central weka-stable-3.8.6.jar. Confirm on the first
-  # canary run and update here if it ever fails (see RUNBOOK "Weka checksum").
   WEKA_SHA256: "932ea2f342b58fe45736389e9c426d5b5955e610d1f5f6485117f532068915e9"
 
 jobs:
@@ -38,20 +42,36 @@ jobs:
         shell: python
         run: |
           import json, os
-          seeds = [s.strip() for s in os.environ["SEEDS"].split(",") if s.strip()]
-          subj_in = os.environ["SUBJECTS"].strip()
           all_subjects = ["AT1","AT2","AT51","AT52","AT53","AT54",
                           "AT6A","AT6B","AT6C","AT6ABC",
                           "CC1","CC2","CC3","CC4","CC5","CCX"]
-          subjects = all_subjects if subj_in == "all" else [s.strip() for s in subj_in.split(",")]
-          include = [{"subject": s, "seed": seed} for s in subjects for seed in seeds]
+          cells = os.environ["CELLS"].strip()
+          include = []
+          if cells:
+              # Targeted re-run: SUBJECT:exp:seed,SUBJECT:exp:seed,...
+              for tok in cells.split(","):
+                  tok = tok.strip()
+                  if not tok:
+                      continue
+                  subj, exp, seed = tok.split(":")
+                  include.append({"subject": subj, "exp": exp, "seed": int(seed)})
+          else:
+              seeds = [int(s) for s in os.environ["SEEDS"].split(",") if s.strip()]
+              subj_in = os.environ["SUBJECTS"].strip()
+              subjects = all_subjects if subj_in == "all" else [s.strip() for s in subj_in.split(",")]
+              exps = [e.strip() for e in os.environ["EXPS"].split(",") if e.strip()]
+              include = [{"subject": s, "exp": e, "seed": seed}
+                         for s in subjects for e in exps for seed in seeds]
           matrix = {"include": include}
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
               f.write("matrix=" + json.dumps(matrix) + "\n")
-          print(json.dumps(matrix, indent=2))
+          print(f"{len(include)} cells")
+          print(json.dumps(matrix, indent=2)[:2000])
         env:
           SEEDS: ${{ inputs.seeds }}
           SUBJECTS: ${{ inputs.subjects }}
+          EXPS: ${{ inputs.exps }}
+          CELLS: ${{ inputs.cells }}
 
   run:
     needs: setup
@@ -61,6 +81,8 @@ jobs:
       fail-fast: false
       max-parallel: 20
       matrix: ${{ fromJson(needs.setup.outputs.matrix) }}
+    env:
+      CELL: ${{ matrix.subject }}_${{ matrix.exp }}_s${{ matrix.seed }}
     steps:
       - uses: actions/checkout@v4
 
@@ -87,45 +109,50 @@ jobs:
           # otherwise J48 dies with NoClassDefFoundError and no tree is produced.
           echo "WEKA_JAR=$HOME/weka/weka-stable-${WEKA_VERSION}.jar:$GITHUB_WORKSPACE/third_party/bounce.jar" >> "$GITHUB_ENV"
 
-      # No outputs cache: the verdict cache is written inside each timestamped
-      # run dir, so it is never reused across runs; caching outputs/ only dragged
-      # stale run dirs from earlier batches into new artifacts. Each dispatch is
-      # a fresh, self-contained run on an ephemeral runner.
+      # Resume mechanism: cache ONLY the stable per-experiment verdict cache
+      # (not the whole outputs/ tree). The run-id key makes every dispatch save
+      # an updated cache; the prefix restore-keys pull the most recent one, so a
+      # re-run of a wall-stopped experiment replays solved candidates from cache
+      # and advances further each time until it completes.
+      - name: Restore verdict cache
+        uses: actions/cache@v4
+        with:
+          path: vcache
+          key: diagnosis-vcache-${{ matrix.subject }}-${{ matrix.exp }}-s${{ matrix.seed }}-${{ github.run_id }}
+          restore-keys: |
+            diagnosis-vcache-${{ matrix.subject }}-${{ matrix.exp }}-s${{ matrix.seed }}-
 
-      - name: Generate configs for this cell
+      - name: Generate this experiment's config
         run: |
           python scripts/gen_batch_configs.py \
             --seeds "${{ matrix.seed }}" \
             --subjects "${{ matrix.subject }}" \
-            --out "configs/${{ matrix.subject }}_s${{ matrix.seed }}"
+            --exps "${{ matrix.exp }}" \
+            --out "configs/${CELL}"
 
-      - name: Run under wall guard
+      - name: Run under wall guard (single experiment, full budget)
         run: |
           python scripts/run_batch.py \
-            --configs-dir "configs/${{ matrix.subject }}_s${{ matrix.seed }}" \
+            --configs-dir "configs/${CELL}" \
             --wall-minutes "${{ inputs.wall_minutes }}" \
-            --workers 1
+            --workers 1 \
+            --cache-dir vcache
 
       - name: Collect artifact payload
         run: |
           mkdir -p payload
-          # Keep report.json, summary.json, run_meta.json, final ARFFs, J48 .out,
-          # stopping-check logs. Exclude bulky per-generation population dumps.
-          find outputs -type f \( \
+          # report.json, summary.json, run_meta.json, final ARFFs, J48 .out,
+          # stopping-check logs. Bulky per-generation dumps are excluded.
+          cd outputs && find . -type f \( \
               -name 'report.json' -o -name 'summary.json' -o -name 'run_meta.json' \
               -o -name '*.out' -o -name '*.arff' -o -name 'inference_state.json' \
               -o -name '*stopping*' -o -name 'hypot.txt' \) \
-            -print0 | rsync -0 -R --files-from=- . payload/ 2>/dev/null || \
-            (cd outputs && find . -type f \( \
-                -name 'report.json' -o -name 'summary.json' -o -name 'run_meta.json' \
-                -o -name '*.out' -o -name '*.arff' -o -name 'inference_state.json' \
-                -o -name '*stopping*' \) \
-              -exec bash -c 'mkdir -p "../payload/$(dirname "{}")"; cp "{}" "../payload/{}"' \;)
+            -exec bash -c 'mkdir -p "../payload/$(dirname "{}")"; cp "{}" "../payload/{}"' \;
 
       - name: Upload run artifact
         uses: actions/upload-artifact@v4
         with:
-          name: diagnosis-run-${{ matrix.subject }}-s${{ matrix.seed }}
+          name: diagnosis-run-${{ matrix.subject }}-${{ matrix.exp }}-s${{ matrix.seed }}
           path: payload
           retention-days: 30
           if-no-files-found: warn

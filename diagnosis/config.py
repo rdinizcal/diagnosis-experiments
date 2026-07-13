@@ -30,6 +30,10 @@ class EvaluationConfig:
     cache_enabled: bool = False
     engine: str = "subprocess"
     parallel_workers: int = 1
+    # Optional stable location for the verdict cache. When set, the cache is
+    # written here instead of inside the (timestamped) run directory, so it can
+    # be preserved across runs to resume an interrupted run cheaply.
+    cache_path: Optional[str] = None
 
 
 @dataclass
@@ -548,6 +552,7 @@ def load_config(path: str | Path) -> Config:
             1,
             int(evaluation_data.get("parallel_workers", EvaluationConfig.parallel_workers)),
         ),
+        cache_path=evaluation_data.get("cache_path", EvaluationConfig.cache_path),
     )
 
     heuristics_cfg = _parse_heuristics(

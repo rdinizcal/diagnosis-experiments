@@ -132,6 +132,7 @@ class GA(object):
         cache_enabled: bool = False,
         engine: str = "subprocess",
         parallel_workers: int = 1,
+        cache_path: str | None = None,
         stopping_config=None,
         heuristics_config=None,
         ):
@@ -208,6 +209,7 @@ class GA(object):
         self.target_sats = int(target_sats)
         self.trace_check_timeout_sec = int(trace_check_timeout_sec)
         self.cache_enabled = bool(cache_enabled)
+        self.cache_path = cache_path
         self.engine = engine
         self.parallel_workers = max(1, int(parallel_workers))
         self.worker: SolverWorker | None = None
@@ -239,8 +241,12 @@ class GA(object):
             print('[diagnosis] WARNING: no property script copied (property_path not set?)')
 
         self.formula_layout = formula_layout
+        cache_file = (
+            Path(self.cache_path) if self.cache_path
+            else Path(self.path) / "verdict_cache.sqlite"
+        )
         self.verdict_cache = VerdictCache(
-            Path(self.path) / "verdict_cache.sqlite",
+            cache_file,
             enabled=self.cache_enabled,
         )
 
