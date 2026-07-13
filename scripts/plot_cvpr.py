@@ -27,7 +27,9 @@ from matplotlib.lines import Line2D
 C = {"exp1": "#0072B2", "exp3": "#D55E00"}      # CVD-safe categorical pair
 INK, MUTED, GRID = "#222222", "#666666", "#dddddd"
 
-RUN_RE = re.compile(r"outputs/([A-Za-z0-9]+)_(exp\d+)_s(\d+)/([^/]+)$")
+# Match <subject>_<exp>_s<seed>/<timestamp> at the end of a run-dir path, with or
+# without a leading "outputs/" (artifact layouts differ between batch versions).
+RUN_RE = re.compile(r"([A-Za-z0-9]+)_(exp\d+)_s(\d+)/([^/]+)$")
 
 
 def newest_runs(runs_dir: str) -> dict:

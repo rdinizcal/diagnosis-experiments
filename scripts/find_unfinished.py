@@ -27,7 +27,9 @@ SUBJECTS = ["AT1", "AT2", "AT51", "AT52", "AT53", "AT54",
             "AT6A", "AT6B", "AT6C", "AT6ABC",
             "CC1", "CC2", "CC3", "CC4", "CC5", "CCX"]
 EXPS = ["exp1", "exp3"]
-RUN_RE = re.compile(r"outputs/([A-Za-z0-9]+)_(exp\d+)_s(\d+)/([^/]+)$")
+# Match <subject>_<exp>_s<seed>/<timestamp> at the end of a run-dir path, with or
+# without a leading "outputs/" (artifact layouts differ between batch versions).
+RUN_RE = re.compile(r"([A-Za-z0-9]+)_(exp\d+)_s(\d+)/([^/]+)$")
 
 
 def newest_runs(runs_dir: str) -> dict:
