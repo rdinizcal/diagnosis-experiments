@@ -32,7 +32,9 @@ from diagnosis.config import load_config
 from diagnosis.pipeline import run_diagnostics
 
 
-class _WallGuard(Exception):
+class _WallGuard(BaseException):
+    # BaseException (not Exception) so the GA's broad ``except Exception``
+    # handlers don't swallow the wall-guard alarm and let the run continue.
     pass
 
 
@@ -53,8 +55,10 @@ def _name_parts(config_name: str) -> dict:
 
 
 def _latest_run_dir(output_root: Path) -> Path | None:
-    reports = sorted(output_root.rglob("report.json"), key=lambda p: p.stat().st_mtime)
-    return reports[-1].parent if reports else None
+    # summary.json is always written (even on an early wall-stop); report.json
+    # may not be, so consider both and take the most recent.
+    marks = list(output_root.rglob("summary.json")) + list(output_root.rglob("report.json"))
+    return max(marks, key=lambda p: p.stat().st_mtime).parent if marks else None
 
 
 def run_one(config_path: Path, wall_seconds: int, workers: Optional[int],
@@ -82,9 +86,12 @@ def run_one(config_path: Path, wall_seconds: int, workers: Optional[int],
     def _on_alarm(signum, frame):
         raise _WallGuard()
 
-    if hasattr(signal, "SIGALRM") and wall_seconds > 0:
+    use_guard = hasattr(signal, "setitimer") and wall_seconds > 0
+    if use_guard:
         signal.signal(signal.SIGALRM, _on_alarm)
-        signal.alarm(wall_seconds)
+        # Fire at wall_seconds, then re-fire every 10s: a rare bare ``except:``
+        # can still swallow one alarm, so keep firing until it escapes to here.
+        signal.setitimer(signal.ITIMER_REAL, wall_seconds, 10)
     try:
         run_diagnostics(cfg)
     except _WallGuard:
@@ -92,8 +99,8 @@ def run_one(config_path: Path, wall_seconds: int, workers: Optional[int],
         print(f"[run_batch] wall guard fired for {config_path.name}; "
               f"leaving resumable state", file=sys.stderr)
     finally:
-        if hasattr(signal, "SIGALRM"):
-            signal.alarm(0)
+        if use_guard:
+            signal.setitimer(signal.ITIMER_REAL, 0)
 
     run_dir = _latest_run_dir(output_root)
     parts = _name_parts(config_path.stem)
