@@ -118,3 +118,85 @@ python3 scripts/aggregate_trees.py runs/
 - **Account string**: `--account=def-<PI>`; check `sshare -U $USER` if unsure which.
 - If the wiki pages block scripted access, they render fine in a browser:
   docs.alliancecan.ca/wiki/Apptainer and /wiki/Running_jobs.
+
+---
+
+## 6. cc_batch package (this branch: `cc-batch-prep`)
+
+The curated batch lives in `configs/cc_batch/` (32 effectiveness experiments,
+`exp1..exp32`, one per (exp_id, requirement); see `configs/cc_batch/PROVENANCE.csv`).
+Every config is stamped with the fixed feature profile:
+**ACTIVE** cache + two-tier timeout + `cv_pr` stopping + time quantization,
+engine `worker`, `parallel_workers=1`; **INACTIVE** interval inference + adaptive
+range (polarity dormant). This supersedes the generic "batch profile uses 8" note in
+§5 — the cc_batch profile pins `parallel_workers=1` for deterministic single-core
+timing, well within `--cpus-per-task=8`.
+
+The clone at `~/Diagnosis` (runbook §0) is the **diagnosis-experiments** repo; it is
+bound to `/opt/run/repo`, so manifest paths are relative to the repo root.
+
+### 6.1 Confirm config-path resolution (dry run, no compute)
+
+```bash
+module load apptainer
+# First manifest entry must resolve inside the bound repo:
+apptainer exec -C -B ~/Diagnosis:/opt/run/repo diagnosis.sif \
+  bash -c 'cfg=$(head -1 /opt/run/repo/configs.manifest.effectiveness); ls -l /opt/run/repo/$cfg'
+# Optional: assert ALL 32 exist
+apptainer exec -C -B ~/Diagnosis:/opt/run/repo diagnosis.sif \
+  bash -c 'cd /opt/run/repo && while read c; do test -f "$c" || echo "MISSING $c"; done < configs.manifest.effectiveness; echo ok'
+```
+
+### 6.2 Preflight (scripted §2 canary)
+
+```bash
+scripts/preflight.sh diagnosis.sif configs/cc_batch/exp1_AT1.json ~/Diagnosis
+# PASS prints the J48 tree from a ~2-minute reduced (pop=10, gen=2) run.
+```
+
+### 6.3 Effectiveness campaign (multi-seed statistics)
+
+```bash
+cd ~/batch                                  # holds diagnosis.sif, submit_batch.sh, logs/
+cp ~/Diagnosis/configs.manifest.effectiveness .
+ln -sf configs.manifest.effectiveness configs.manifest
+wc -l configs.manifest                      # 32
+export NSEEDS=10                            # 32 configs x 10 seeds = 320 tasks
+sbatch --array=0-319%50 hpc/submit_batch.sh # idx%32=config, idx/32=seed
+```
+
+### 6.4 Efficiency campaign (timing — ONE node model, single seed)
+
+```bash
+cp ~/Diagnosis/configs.manifest.efficiency .
+ln -sf configs.manifest.efficiency configs.manifest
+export NSEEDS=1                             # no seed spread; timing must be reproducible
+sbatch --constraint=<nodetype> --array=0-31 hpc/submit_batch.sh   # e.g. narval: --constraint=milan
+# Each task writes node_info.txt; report that single node model in the paper.
+```
+
+### 6.5 Wall time per requirement family
+
+The 3 h default fits the AT family. The CC-heavy families need the longer limit; run
+them as a separate array slice (0-indexed config positions in the manifest, single
+seed):
+
+| family | exp_ids | manifest indices | suggested --time |
+|--------|---------|------------------|------------------|
+| CC1    | 21, 22  | 20, 21           | 12:00:00 |
+| CC4    | 27, 28  | 26, 27           | 12:00:00 |
+| CCx    | 31, 32  | 30, 31           | 12:00:00 |
+
+```bash
+# CC-heavy slice, single seed, longer wall (efficiency manifest):
+sbatch --time=12:00:00 --constraint=<nodetype> --array=20,21,26,27,30,31 hpc/submit_batch.sh
+```
+
+With `NSEEDS>1` the array index for (config `c`, seed `s`) is `s*32 + c`. The wall
+guard in `submit_batch.sh` finalizes ARFF + J48 + summary ~10 min before SLURM's
+limit; a task killed at the wall resumes cheaply from the verdict cache on resubmit.
+
+### 6.6 CPU budget
+
+`parallel_workers=1` in every cc_batch config ≤ `--cpus-per-task=8` (verified by the
+feature-profile stamp); no config oversubscribes its allocation.
