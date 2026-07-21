@@ -9,7 +9,9 @@ __pycache__/
 *.egg-info/
 
 # Generated configs and run outputs
-configs/
+configs/*
+# The curated Alliance Canada batch set is versioned (self-contained package).
+!configs/cc_batch/
 outputs/
 stats/
 artifacts/
