@@ -9,11 +9,11 @@
   "ga": {
     "stopping": {
       "mode": "cv_pr",
-      "pr_threshold": 0.95,
+      "pr_threshold": 0.995,
       "check_every_generations": 1,
       "patience": 2,
       "min_samples": 50,
-      "max_samples": 2000
+      "max_samples": 1000
     }
   },
   "heuristics": {
