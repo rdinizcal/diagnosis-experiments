@@ -1,0 +1,9 @@
+# Exact versions matching the local .diagnosis venv (Python 3.13).
+# Keep these in lockstep with the environment used to produce the paper's results.
+z3-solver==4.15.4.0
+numpy==2.4.2
+scipy==1.17.1
+matplotlib==3.10.8
+tqdm==4.67.3
+# NOTE: RTAMT is intentionally NOT here — the RTAMT generalizability experiment
+# is a separate study with its own environment; effectiveness/efficiency runs use Z3 only.

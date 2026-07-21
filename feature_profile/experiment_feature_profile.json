@@ -1,0 +1,37 @@
+{
+  "_comment": "Canonical feature profile for ALL effectiveness/efficiency experiments. Deep-merge into each config. Field names match diagnosis/config.py exactly. Polarity analysis has no switch of its own: it is only used by interval_inference / adaptive_range, so leaving those OFF keeps it dormant.",
+  "evaluation": {
+    "engine": "worker",
+    "parallel_workers": 1,
+    "cache_enabled": true,
+    "trace_check_timeout_sec": 3600
+  },
+  "ga": {
+    "stopping": {
+      "mode": "cv_pr",
+      "pr_threshold": 0.95,
+      "check_every_generations": 1,
+      "patience": 2,
+      "min_samples": 50,
+      "max_samples": 2000
+    }
+  },
+  "heuristics": {
+    "two_tier_timeout": {
+      "enabled": true,
+      "low_sec": 60,
+      "high_sec": 600,
+      "escalation": "once_per_formula"
+    },
+    "time_quantization": {
+      "enabled": true,
+      "validate_every_n_hits": 50
+    },
+    "interval_inference": {
+      "enabled": false
+    },
+    "adaptive_range": {
+      "enabled": false
+    }
+  }
+}

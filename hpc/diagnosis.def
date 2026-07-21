@@ -1,0 +1,85 @@
+Bootstrap: docker
+From: python:3.13-slim-bookworm
+
+# Apptainer definition for the effectiveness + efficiency batches.
+# Python 3.13 to match the local .diagnosis venv exactly; deps pinned in
+# requirements-lock.txt. Z3 comes from PyPI wheels (NOT Alliance's wheelhouse) —
+# the %post below forces pypi.org and strips any leaked PIP_* config so the pinned
+# z3-solver==4.15.4.0 wheel is always the one installed. RTAMT is deliberately NOT
+# installed (separate study).
+#
+# BUILD ON A LOGIN NODE (compute nodes have no internet):
+#   module load apptainer
+#   export APPTAINER_CACHEDIR=$SCRATCH/apptainer-cache APPTAINER_TMPDIR=$SCRATCH/apptainer-tmp
+#   apptainer build diagnosis.sif diagnosis.def
+# If the login node's pip is still blocked (see RUNBOOK), use the OFFLINE variant:
+#   ./fetch_wheels.sh          # on any x86_64 Linux w/ internet -> populates wheels/
+#   OFFLINE=1 apptainer build diagnosis.sif diagnosis.def
+
+%files
+    ../code/Diagnosis /opt/diagnosis
+    requirements-lock.txt /opt/requirements-lock.txt
+    wheels /opt/wheels
+
+%post
+    set -eu
+    export DEBIAN_FRONTEND=noninteractive
+
+    # --- Strip any Alliance/host pip redirection that leaked into the build env ---
+    unset PIP_INDEX_URL PIP_EXTRA_INDEX_URL PIP_CONFIG_FILE PIP_FIND_LINKS || true
+    export PIP_NO_CACHE_DIR=1
+    export PIP_DISABLE_PIP_VERSION_CHECK=1
+
+    # --- Java (for Weka J48) ---
+    apt-get update
+    apt-get install -y --no-install-recommends default-jre-headless wget ca-certificates
+    rm -rf /var/lib/apt/lists/*
+
+    # --- Weka + bounce, pinned (same as docker/Dockerfile) ---
+    WEKA_VERSION=3.8.6
+    BOUNCE_VERSION=0.18
+    mkdir -p /opt/weka
+    wget -q -O /opt/weka/weka.jar \
+      "https://repo1.maven.org/maven2/nz/ac/waikato/cms/weka/weka-stable/${WEKA_VERSION}/weka-stable-${WEKA_VERSION}.jar"
+    wget -q -O /opt/weka/bounce.jar \
+      "https://repo1.maven.org/maven2/nz/ac/waikato/cms/weka/thirdparty/bounce/${BOUNCE_VERSION}/bounce-${BOUNCE_VERSION}.jar"
+    chmod 644 /opt/weka/*.jar
+
+    python3 -m pip install --upgrade pip
+
+    # --- Python deps: exact pins, wheels only (no source builds) ---
+    if [ "${OFFLINE:-0}" = "1" ] && [ -d /opt/wheels ] && [ -n "$(ls -A /opt/wheels 2>/dev/null)" ]; then
+        # Fully offline: install from the vendored wheelhouse, no index at all.
+        python3 -m pip install --no-index --find-links /opt/wheels -r /opt/requirements-lock.txt
+    else
+        # Force the public index, ignore any host/Alliance wheelhouse, binaries only.
+        python3 -m pip install \
+            --index-url https://pypi.org/simple/ \
+            --only-binary=:all: \
+            -r /opt/requirements-lock.txt
+    fi
+
+    # --- Install the tool itself WITHOUT re-resolving deps (pins already satisfied) ---
+    python3 -m pip install --no-deps -e /opt/diagnosis
+
+    mkdir -p /opt/diagnosis/outputs
+
+%environment
+    export WEKA_JAR=/opt/weka/weka.jar:/opt/weka/bounce.jar
+    export PYTHONUNBUFFERED=1
+    export LC_ALL=C.UTF-8
+
+%runscript
+    exec diagnosis "$@"
+
+%labels
+    Purpose Diagnosis SBTD evaluation batches (effectiveness + efficiency), Z3 backend
+    Python 3.13
+    Z3 4.15.4.0
+
+%test
+    python3 -c "import sys; assert sys.version_info[:2]==(3,13), sys.version; print('python', sys.version.split()[0])"
+    python3 -c "import z3; print('z3', z3.get_version_string())"
+    python3 -c "import numpy, scipy, matplotlib, tqdm; print('numpy', numpy.__version__, 'scipy', scipy.__version__)"
+    java -version 2>&1 | head -1
+    diagnosis --help >/dev/null && echo "diagnosis CLI OK"
