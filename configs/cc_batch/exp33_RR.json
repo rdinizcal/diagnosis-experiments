@@ -1,0 +1,78 @@
+{
+ "input": {
+  "requirement_file": "replication/evaluation_inputs/sensitivity/RR/property_RR_RR.py",
+  "traces_file": "na",
+  "output_dir": "outputs/cc_batch/exp33_RR"
+ },
+ "ga": {
+  "population_size": 50,
+  "generations": 100,
+  "crossover_rate": 0.95,
+  "mutation_rate": 0.9,
+  "target_sats": 1000,
+  "stopping": {
+   "mode": "cv_pr",
+   "pr_threshold": 0.995,
+   "check_every_generations": 1,
+   "patience": 2,
+   "min_samples": 50,
+   "max_samples": 1000
+  }
+ },
+ "mutation": {
+  "max_mutations": 1,
+  "enable_numeric_perturbation": true,
+  "enable_relop_flip": false,
+  "enable_logical_flip": true,
+  "enable_quantifier_flip": false,
+  "allowed_positions": [
+   9,
+   12,
+   17
+  ],
+  "allowed_changes": {
+   "9": {
+    "logical": [
+     "And",
+     "Or"
+    ]
+   },
+   "12": {
+    "numeric": [
+     0.3,
+     0.8
+    ]
+   },
+   "17": {
+    "numeric": [
+     0.2,
+     1.2
+    ]
+   }
+  }
+ },
+ "evaluation": {
+  "engine": "worker",
+  "parallel_workers": 1,
+  "cache_enabled": true,
+  "trace_check_timeout_sec": 3600
+ },
+ "heuristics": {
+  "two_tier_timeout": {
+   "enabled": true,
+   "low_sec": 60,
+   "high_sec": 600,
+   "escalation": "once_per_formula"
+  },
+  "time_quantization": {
+   "enabled": true,
+   "validate_every_n_hits": 50
+  },
+  "interval_inference": {
+   "enabled": false
+  },
+  "adaptive_range": {
+   "enabled": false
+  }
+ }
+}

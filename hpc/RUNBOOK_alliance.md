@@ -123,8 +123,8 @@ python3 scripts/aggregate_trees.py runs/
 
 ## 6. cc_batch package (this branch: `cc-batch-prep`)
 
-The curated batch lives in `configs/cc_batch/` (32 effectiveness experiments,
-`exp1..exp32`, one per (exp_id, requirement); see `configs/cc_batch/PROVENANCE.csv`).
+The curated batch lives in `configs/cc_batch/` (33 effectiveness experiments
+(`exp1..exp32` for the AT/CC families + `exp33_RR` for the running example), one per (exp_id, requirement); see `configs/cc_batch/PROVENANCE.csv`).
 Every config is stamped with the fixed feature profile:
 **ACTIVE** cache + two-tier timeout + `cv_pr` stopping + time quantization,
 engine `worker`, `parallel_workers=1`; **INACTIVE** interval inference + adaptive
@@ -160,9 +160,9 @@ scripts/preflight.sh diagnosis.sif configs/cc_batch/exp1_AT1.json ~/Diagnosis
 cd ~/batch                                  # holds diagnosis.sif, submit_batch.sh, logs/
 cp ~/Diagnosis/configs.manifest.effectiveness .
 ln -sf configs.manifest.effectiveness configs.manifest
-wc -l configs.manifest                      # 32
-export NSEEDS=10                            # 32 configs x 10 seeds = 320 tasks
-sbatch --array=0-319%50 hpc/submit_batch.sh # idx%32=config, idx/32=seed
+wc -l configs.manifest                      # 33
+export NSEEDS=10                            # 33 configs x 10 seeds = 330 tasks
+sbatch --array=0-329%50 hpc/submit_batch.sh # idx%33=config, idx/33=seed
 ```
 
 ### 6.4 Efficiency campaign (timing — ONE node model, single seed)
@@ -171,7 +171,7 @@ sbatch --array=0-319%50 hpc/submit_batch.sh # idx%32=config, idx/32=seed
 cp ~/Diagnosis/configs.manifest.efficiency .
 ln -sf configs.manifest.efficiency configs.manifest
 export NSEEDS=1                             # no seed spread; timing must be reproducible
-sbatch --constraint=<nodetype> --array=0-31 hpc/submit_batch.sh   # e.g. narval: --constraint=milan
+sbatch --constraint=<nodetype> --array=0-32 hpc/submit_batch.sh   # e.g. narval: --constraint=milan
 # Each task writes node_info.txt; report that single node model in the paper.
 ```
 
@@ -192,7 +192,7 @@ seed):
 sbatch --time=12:00:00 --constraint=<nodetype> --array=20,21,26,27,30,31 hpc/submit_batch.sh
 ```
 
-With `NSEEDS>1` the array index for (config `c`, seed `s`) is `s*32 + c`. The wall
+With `NSEEDS>1` the array index for (config `c`, seed `s`) is `s*33 + c`. The wall
 guard in `submit_batch.sh` finalizes ARFF + J48 + summary ~10 min before SLURM's
 limit; a task killed at the wall resumes cheaply from the verdict cache on resubmit.
 
