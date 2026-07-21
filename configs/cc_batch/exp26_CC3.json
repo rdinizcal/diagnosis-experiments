@@ -12,11 +12,11 @@
   "target_sats": 1000,
   "stopping": {
    "mode": "cv_pr",
-   "pr_threshold": 0.995,
+   "pr_threshold": 0.95,
    "check_every_generations": 1,
    "patience": 2,
    "min_samples": 50,
-   "max_samples": 1000
+   "max_samples": 2000
   }
  },
  "mutation": {
@@ -53,11 +53,13 @@
  },
  "evaluation": {
   "trace_check_timeout_sec": 3600,
-  "cache_enabled": true
+  "cache_enabled": true,
+  "engine": "worker",
+  "parallel_workers": 1
  },
  "heuristics": {
   "interval_inference": {
-   "enabled": true,
+   "enabled": false,
    "mode": "label",
    "empirical_validation_k": 2
   },
@@ -68,12 +70,16 @@
    "escalation": "once_per_formula"
   },
   "adaptive_range": {
-   "enabled": true,
+   "enabled": false,
    "exploration_fraction": 0.3,
    "endpoint_init": true,
    "on_one_class": "continue",
    "widen_factor": 1.5,
    "max_widenings": 4
+  },
+  "time_quantization": {
+   "enabled": true,
+   "validate_every_n_hits": 50
   }
  }
 }
