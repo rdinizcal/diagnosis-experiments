@@ -1,25 +1,31 @@
 Bootstrap: docker
 From: python:3.13-slim-bookworm
 
-# Apptainer definition for the effectiveness + efficiency batches.
+# Apptainer definition for the joined effectiveness + efficiency batch.
 # Python 3.13 to match the local .diagnosis venv exactly; deps pinned in
 # requirements-lock.txt. Z3 comes from PyPI wheels (NOT Alliance's wheelhouse) —
 # the %post below forces pypi.org and strips any leaked PIP_* config so the pinned
 # z3-solver==4.15.4.0 wheel is always the one installed. RTAMT is deliberately NOT
 # installed (separate study).
 #
-# BUILD ON A LOGIN NODE (compute nodes have no internet):
+# BUILD FROM THE REPO ROOT ON A LOGIN NODE (compute nodes have no internet):
 #   module load apptainer
 #   export APPTAINER_CACHEDIR=$SCRATCH/apptainer-cache APPTAINER_TMPDIR=$SCRATCH/apptainer-tmp
-#   apptainer build diagnosis.sif diagnosis.def
-# If the login node's pip is still blocked (see RUNBOOK), use the OFFLINE variant:
-#   ./fetch_wheels.sh          # on any x86_64 Linux w/ internet -> populates wheels/
-#   OFFLINE=1 apptainer build diagnosis.sif diagnosis.def
+#   apptainer build diagnosis.sif hpc/diagnosis.def
+# %post auto-selects the install source: if hpc/wheels/ holds *.whl (populated by
+# ./fetch_wheels.sh) it installs fully offline from there; otherwise it pulls the
+# pinned wheels from pypi.org. No build-time env var is needed.
+#
+# %files source paths below are relative to the build CWD (the repo root, per the
+# command above) — NOT to this .def file's location.
 
 %files
-    ../code/Diagnosis /opt/diagnosis
-    requirements-lock.txt /opt/requirements-lock.txt
-    wheels /opt/wheels
+    diagnosis /opt/diagnosis/diagnosis
+    pyproject.toml /opt/diagnosis/pyproject.toml
+    README.md /opt/diagnosis/README.md
+    LICENSE /opt/diagnosis/LICENSE
+    hpc/requirements-lock.txt /opt/requirements-lock.txt
+    hpc/wheels /opt/wheels
 
 %post
     set -eu
@@ -48,8 +54,9 @@ From: python:3.13-slim-bookworm
     python3 -m pip install --upgrade pip
 
     # --- Python deps: exact pins, wheels only (no source builds) ---
-    if [ "${OFFLINE:-0}" = "1" ] && [ -d /opt/wheels ] && [ -n "$(ls -A /opt/wheels 2>/dev/null)" ]; then
-        # Fully offline: install from the vendored wheelhouse, no index at all.
+    if ls /opt/wheels/*.whl >/dev/null 2>&1; then
+        # Vendored wheelhouse present (fetch_wheels.sh was run): install fully
+        # offline from it, no index at all.
         python3 -m pip install --no-index --find-links /opt/wheels -r /opt/requirements-lock.txt
     else
         # Force the public index, ignore any host/Alliance wheelhouse, binaries only.

@@ -1,0 +1,3 @@
+# Placeholder so %files always finds hpc/wheels/.
+# Run ./fetch_wheels.sh to populate this dir with *.whl for an OFFLINE build.
+# The build auto-detects *.whl here; with none present it installs from pypi.org.

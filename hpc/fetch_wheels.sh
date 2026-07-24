@@ -25,4 +25,5 @@ python3 -m pip download \
 echo "Vendored wheels:"
 ls -1 wheels
 echo
-echo "Now build offline:  OFFLINE=1 apptainer build diagnosis.sif diagnosis.def"
+echo "wheels/ now populated — the build auto-detects them and installs fully offline:"
+echo "  apptainer build diagnosis.sif hpc/diagnosis.def   (run from the repo root)"

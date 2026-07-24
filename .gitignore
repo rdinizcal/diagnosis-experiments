@@ -21,3 +21,6 @@ online_results/
 
 # Verdict caches
 *.sqlite
+
+# Vendored wheels for offline Apptainer build (do not commit the binaries)
+hpc/wheels/*.whl

@@ -1,185 +1,113 @@
-# Runbook — Diagnosis batches on Alliance Canada (Apptainer + SLURM)
+# Runbook — Diagnosis batch on Alliance Canada (Apptainer + SLURM)
 
-Target: full effectiveness + efficiency campaigns (32 configs × N seeds). No Docker on Alliance
-clusters; Apptainer is the supported runtime. Compute nodes have **no internet** on most
-clusters — everything (pip packages, Weka jars, z3) is baked into the SIF at build time.
+One **joined** campaign: every run produces both the **effectiveness** artifacts (J48
+tree, ARFF, `report.json`) and the **efficiency/timing** provenance. To keep timing
+comparable, **every task always runs on a single, pinned node model** (`--constraint`).
+We execute in **two tiers**:
+
+- **Tier 1 — smoke + timing** (`NSEEDS=1`): one run per config. Confirms the pipeline
+  works end-to-end and measures wall time per experiment.
+- **Tier 2 — statistics** (`NSEEDS=10`): only after Tier 1 finishes comfortably within
+  the wall. Same configs, same node model, 10 seeds for the effectiveness statistics.
+
+No Docker on Alliance clusters; Apptainer is the runtime. Compute nodes have **no
+internet** — pip packages, Weka jars and z3 are all baked into the SIF at build time.
+
+The batch is `configs/cc_batch/` (33 experiments: `exp1..exp32` for the AT/CC families +
+`exp33_RR` for the running example; see `configs/cc_batch/PROVENANCE.csv`). Every config
+carries the fixed feature profile — **ACTIVE** cache + two-tier timeout + `cv_pr`
+stopping + time quantization, engine `worker`, `parallel_workers=1`; **INACTIVE** interval
+inference + adaptive range. `parallel_workers=1` (deterministic single-core timing) is
+well within `--cpus-per-task=8`. RTAMT is NOT installed (separate study).
+
+---
 
 ## 0. One-time setup (login node)
 
 ```bash
-ssh <user>@narval.alliancecan.ca          # or beluga/graham per your allocation
-git clone <your-repo-url> ~/Diagnosis     # the STABLE branch, not spike branches
+ssh <user>@narval.alliancecan.ca               # or beluga/graham per your allocation
+git clone <your-repo-url> ~/Diagnosis          # the diagnosis-experiments repo (stable branch)
 mkdir -p ~/scratch/apptainer-cache ~/scratch/apptainer-tmp ~/scratch/diagnosis-runs
+mkdir -p ~/batch/logs
 ```
 
-Copy `hpc/` (this folder) next to the clone, adjust the `%files` path in `diagnosis.def`
-so it points at the clone.
+`~/Diagnosis` is the repo root: it holds `pyproject.toml`, the `diagnosis/` package,
+`configs/`, `replication/`, and `hpc/`. It gets bound to `/opt/run/repo` at run time, so
+manifest paths (relative to the repo root) resolve inside the container.
 
 ## 1. Build the container (login node — builds need network)
 
-The container is `python:3.13-slim` based to match the local venv EXACTLY (Python 3.13,
-z3-solver 4.15.4.0, numpy 2.4.2, scipy 1.17.1, matplotlib 3.10.8, tqdm 4.67.3 — pinned in
-`requirements-lock.txt`). RTAMT is NOT installed (separate study).
+`python:3.13-slim` based to match the local venv EXACTLY (Python 3.13, z3-solver
+4.15.4.0, numpy 2.4.2, scipy 1.17.1, matplotlib 3.10.8, tqdm 4.67.3 — pinned in
+`hpc/requirements-lock.txt`).
 
 ```bash
+cd ~/Diagnosis                                  # build from the repo root (%files are relative to it)
 module load apptainer
 export APPTAINER_CACHEDIR=~/scratch/apptainer-cache
 export APPTAINER_TMPDIR=~/scratch/apptainer-tmp
-apptainer build diagnosis.sif hpc/diagnosis.def
-apptainer test diagnosis.sif              # %test asserts py3.13 + z3 4.15.4.0 + java + CLI
+apptainer build ~/batch/diagnosis.sif hpc/diagnosis.def
+apptainer test  ~/batch/diagnosis.sif           # asserts py3.13 + z3 4.15.4.0 + java + CLI
 ```
 
-### Why the old `pip install z3-solver` failed, and how this def fixes it
+Unprivileged builds work on Alliance login nodes (no sudo). If OOM-killed, build inside a
+short `salloc`.
 
-The Alliance software stack sets `PIP_INDEX_URL` / `PIP_CONFIG_FILE` pointing at their in-house
-wheelhouse, which does not carry `z3-solver==4.15.4.0`. Those variables leak into the
-`apptainer build` %post step, so pip tries the wheelhouse and fails. The def now **unsets all
-PIP_* redirection and forces `--index-url https://pypi.org/simple/ --only-binary=:all:`**, so the
-exact z3 wheel from PyPI is installed regardless of the host environment. `pip install -e .` runs
-with `--no-deps` so it can never re-resolve to different versions.
+### Offline fallback (only if the login node firewalls PyPI)
 
-### Offline fallback (if the login node blocks PyPI entirely)
-
-Some clusters firewall outbound PyPI even on login nodes. Then vendor the wheels first:
+The build **auto-detects** a vendored wheelhouse — no env var. Populate `hpc/wheels/` on
+any x86_64 Linux with Python 3.13 + internet, copy it to the cluster, then build normally:
 
 ```bash
-# On any x86_64 Linux with Python 3.13 + internet (login node w/ `module load python/3.13`,
-# or your laptop), from the hpc/ dir:
-./fetch_wheels.sh                          # populates hpc/wheels/ with the exact pinned wheels
-# Copy hpc/ (now including wheels/) to the cluster, then:
-OFFLINE=1 apptainer build diagnosis.sif hpc/diagnosis.def
+cd ~/Diagnosis/hpc && ./fetch_wheels.sh         # fills hpc/wheels/ with the exact pinned *.whl
+cd ~/Diagnosis && apptainer build ~/batch/diagnosis.sif hpc/diagnosis.def   # installs from wheels/
 ```
 
-Notes: unprivileged builds work on Alliance login nodes (no sudo). If the build is OOM-killed,
-raise the login-shell memory or build in a short `salloc`.
+If `hpc/wheels/` holds no `*.whl`, the build pulls the pinned wheels from pypi.org instead.
 
-## 2. Canary (interactive, before any array)
+## 2. Preflight (prove the container + pipeline before any array)
 
 ```bash
-salloc --account=def-CHANGEME --cpus-per-task=8 --mem=16G --time=00:30:00
-module load apptainer
-apptainer exec -C -B ~/Diagnosis:/opt/run/repo -B ~/scratch/diagnosis-runs/canary:/opt/run/out \
-  -B $SLURM_TMPDIR:/tmp --pwd /opt/run/repo diagnosis.sif \
-  diagnosis run --config configs/at_batch_all_on/AT1_exp1_all_on_cv_pr.json
+cd ~/Diagnosis
+# 2a. Every manifest path resolves inside the bound repo:
+apptainer exec -C -B ~/Diagnosis:/opt/run/repo ~/batch/diagnosis.sif \
+  bash -c 'cd /opt/run/repo && while read c; do test -f "$c" || echo "MISSING $c"; done < configs.manifest; echo ok'
+
+# 2b. Reduced canary (~2 min, pop=10/gen=2) — asserts a J48 tree is produced:
+scripts/preflight.sh ~/batch/diagnosis.sif configs/cc_batch/exp1_AT1.json ~/Diagnosis
 ```
 
-Verify: run completes, tree produced, outputs land on scratch, `report.json` sane.
+`preflight.sh` PASS prints the J48 tree from the reduced run. Do not submit an array until
+both pass.
 
-## 3. Submit the campaigns
+## 3. Run the campaign (single node, two tiers)
+
+Pick ONE node model and use it for **both** tiers (e.g. narval: `--constraint=milan`);
+record it — timing is only comparable within one model. Each task writes
+`node_info.txt`; the model reported there goes in the paper's setup section.
 
 ```bash
-cd ~/batch && ls
-#  diagnosis.sif  submit_batch.sh  configs.manifest  logs/
-wc -l configs.manifest                    # 32 configs
-# Effectiveness / statistics campaign (10 seeds => 320 tasks):
-export NSEEDS=10
-sbatch --array=0-319%50 submit_batch.sh   # %50 = max 50 concurrent, be a good citizen
-# CC-heavy subset with a longer limit:
-sbatch --time=12:00:00 --array=<cc-indices> submit_batch.sh
+cd ~/batch                                       # holds diagnosis.sif, logs/
+cp ~/Diagnosis/configs.manifest .
+export REPO=~/Diagnosis SIF=~/batch/diagnosis.sif
+wc -l configs.manifest                           # 33
 ```
 
-Task→(config,seed) mapping: `idx % n_configs` = config, `idx / n_configs` = seed.
+### Tier 1 — smoke + timing (single seed → 33 tasks)
 
-**Efficiency (timing) campaign — separate submission:** timing numbers must come from ONE
-node model. Pin it and disable seeds:
 ```bash
 export NSEEDS=1
-sbatch --constraint=<nodetype> --array=0-31 submit_batch.sh   # e.g. narval: --constraint=milan
+sbatch --constraint=<nodetype> --array=0-32%50 ~/Diagnosis/hpc/submit_batch.sh
 ```
-Record the node model (each run writes `node_info.txt`); report it in the paper's setup
-section. Do NOT mix timing from different node types or from the statistics campaign.
 
-## 4. Monitor / collect
+Check the wall each task actually used before committing to Tier 2:
 
 ```bash
-squeue -u $USER
-sacct -j <jobid> --format=JobID,State,Elapsed,MaxRSS,CPUTime   # per-task resources → paper table
-seff <jobid_taskid>                                            # efficiency per task
-# Collect to your machine:
-rsync -av --exclude '*.sqlite' narval:~/scratch/diagnosis-runs/ ./runs/
-# Aggregate (reuse the tree-statistics script from the experiments repo):
-python3 scripts/aggregate_trees.py runs/
+sacct -j <jobid> --format=JobID,State,Elapsed,MaxRSS,CPUTime
 ```
 
-## 5. Gotchas
-
-- **No internet on compute nodes**: any `pip install`, `wget`, or registry pull inside a job
-  fails. If a dependency is missing, rebuild the SIF on the login node.
-- **`-C` (containall)** keeps host env/dotfiles out of the container — reproducibility. All
-  data flows through the explicit `-B` binds only.
-- **Scratch is purged** (typically files untouched ~60 days) — rsync results off promptly;
-  `/project` for anything to keep.
-- **Wall guard**: submit_batch.sh reserves ~10 min before SLURM's limit so the run finalizes
-  ARFF + J48 + summary; a killed task resumes cheaply via the verdict cache (SQLite in the
-  run dir — do not exclude it from re-runs, only from the final rsync).
-- **Java/Weka**: baked into the SIF (`WEKA_JAR` set in `%environment`); no `module load java`.
-- **Parallel workers**: the tool reads `SLURM_CPUS_PER_TASK`-sized allocation; keep
-  `parallel_workers <= cpus-per-task` in the configs (batch profile uses 8).
-- **Account string**: `--account=def-<PI>`; check `sshare -U $USER` if unsure which.
-- If the wiki pages block scripted access, they render fine in a browser:
-  docs.alliancecan.ca/wiki/Apptainer and /wiki/Running_jobs.
-
----
-
-## 6. cc_batch package (this branch: `cc-batch-prep`)
-
-The curated batch lives in `configs/cc_batch/` (33 effectiveness experiments
-(`exp1..exp32` for the AT/CC families + `exp33_RR` for the running example), one per (exp_id, requirement); see `configs/cc_batch/PROVENANCE.csv`).
-Every config is stamped with the fixed feature profile:
-**ACTIVE** cache + two-tier timeout + `cv_pr` stopping + time quantization,
-engine `worker`, `parallel_workers=1`; **INACTIVE** interval inference + adaptive
-range (polarity dormant). This supersedes the generic "batch profile uses 8" note in
-§5 — the cc_batch profile pins `parallel_workers=1` for deterministic single-core
-timing, well within `--cpus-per-task=8`.
-
-The clone at `~/Diagnosis` (runbook §0) is the **diagnosis-experiments** repo; it is
-bound to `/opt/run/repo`, so manifest paths are relative to the repo root.
-
-### 6.1 Confirm config-path resolution (dry run, no compute)
-
-```bash
-module load apptainer
-# First manifest entry must resolve inside the bound repo:
-apptainer exec -C -B ~/Diagnosis:/opt/run/repo diagnosis.sif \
-  bash -c 'cfg=$(head -1 /opt/run/repo/configs.manifest.effectiveness); ls -l /opt/run/repo/$cfg'
-# Optional: assert ALL 32 exist
-apptainer exec -C -B ~/Diagnosis:/opt/run/repo diagnosis.sif \
-  bash -c 'cd /opt/run/repo && while read c; do test -f "$c" || echo "MISSING $c"; done < configs.manifest.effectiveness; echo ok'
-```
-
-### 6.2 Preflight (scripted §2 canary)
-
-```bash
-scripts/preflight.sh diagnosis.sif configs/cc_batch/exp1_AT1.json ~/Diagnosis
-# PASS prints the J48 tree from a ~2-minute reduced (pop=10, gen=2) run.
-```
-
-### 6.3 Effectiveness campaign (multi-seed statistics)
-
-```bash
-cd ~/batch                                  # holds diagnosis.sif, submit_batch.sh, logs/
-cp ~/Diagnosis/configs.manifest.effectiveness .
-ln -sf configs.manifest.effectiveness configs.manifest
-wc -l configs.manifest                      # 33
-export NSEEDS=10                            # 33 configs x 10 seeds = 330 tasks
-sbatch --array=0-329%50 hpc/submit_batch.sh # idx%33=config, idx/33=seed
-```
-
-### 6.4 Efficiency campaign (timing — ONE node model, single seed)
-
-```bash
-cp ~/Diagnosis/configs.manifest.efficiency .
-ln -sf configs.manifest.efficiency configs.manifest
-export NSEEDS=1                             # no seed spread; timing must be reproducible
-sbatch --constraint=<nodetype> --array=0-32 hpc/submit_batch.sh   # e.g. narval: --constraint=milan
-# Each task writes node_info.txt; report that single node model in the paper.
-```
-
-### 6.5 Wall time per requirement family
-
-The 3 h default fits the AT family. The CC-heavy families need the longer limit; run
-them as a separate array slice (0-indexed config positions in the manifest, single
-seed):
+If the slowest experiments approach the 3 h wall, resubmit just those with a longer limit
+(0-indexed manifest positions, still single seed):
 
 | family | exp_ids | manifest indices | suggested --time |
 |--------|---------|------------------|------------------|
@@ -188,15 +116,49 @@ seed):
 | CCx    | 31, 32  | 30, 31           | 12:00:00 |
 
 ```bash
-# CC-heavy slice, single seed, longer wall (efficiency manifest):
-sbatch --time=12:00:00 --constraint=<nodetype> --array=20,21,26,27,30,31 hpc/submit_batch.sh
+sbatch --time=12:00:00 --constraint=<nodetype> --array=20,21,26,27,30,31 ~/Diagnosis/hpc/submit_batch.sh
 ```
 
-With `NSEEDS>1` the array index for (config `c`, seed `s`) is `s*33 + c`. The wall
-guard in `submit_batch.sh` finalizes ARFF + J48 + summary ~10 min before SLURM's
-limit; a task killed at the wall resumes cheaply from the verdict cache on resubmit.
+### Tier 2 — statistics (10 seeds → 330 tasks)
 
-### 6.6 CPU budget
+Only after Tier 1 fits the wall comfortably, on the **same** node model:
 
-`parallel_workers=1` in every cc_batch config ≤ `--cpus-per-task=8` (verified by the
-feature-profile stamp); no config oversubscribes its allocation.
+```bash
+export NSEEDS=10                                 # 33 configs × 10 seeds = 330 tasks
+sbatch --constraint=<nodetype> --array=0-329%50 ~/Diagnosis/hpc/submit_batch.sh
+```
+
+Task→(config,seed): `idx % 33 = config`, `idx / 33 = seed`; so (config `c`, seed `s`) is
+array index `s*33 + c`. `%50` caps concurrency at 50 — be a good citizen.
+
+## 4. Monitor / collect
+
+```bash
+squeue -u $USER
+sacct -j <jobid> --format=JobID,State,Elapsed,MaxRSS,CPUTime   # per-task resources → paper table
+seff <jobid_taskid>                                            # efficiency per task
+rsync -av --exclude '*.sqlite' narval:~/scratch/diagnosis-runs/ ./runs/   # results off-cluster
+python3 scripts/aggregate_trees.py runs/                        # aggregate effectiveness
+```
+
+## 5. Gotchas
+
+- **Always pass `--constraint=<nodetype>`** — both tiers, same model. Timing from mixed
+  node types is not comparable and must not be pooled.
+- **Export `REPO` and `SIF`** before `sbatch` (the script FATALs early if either is
+  missing) — `REPO=~/Diagnosis`, `SIF=~/batch/diagnosis.sif`.
+- **No internet on compute nodes**: any `pip install`/`wget`/registry pull inside a job
+  fails. Missing a dep ⇒ rebuild the SIF on the login node.
+- **`-C` (containall)** keeps host env/dotfiles out of the container; all data flows
+  through the explicit `-B` binds only.
+- **Wall guard**: `submit_batch.sh` derives the deadline from `scontrol` and reserves
+  ~10 min so the run finalizes ARFF + J48 + summary. A task killed at the wall resumes
+  cheaply from the verdict cache (SQLite in the run dir — keep it for re-runs; only
+  exclude it from the final rsync).
+- **Scratch is purged** (~60 days untouched) — rsync results off promptly; use `/project`
+  for anything to keep.
+- **Java/Weka**: baked into the SIF (`WEKA_JAR` in `%environment`); no `module load java`.
+- **Account string**: `--account=def-<PI>` (set in `submit_batch.sh`); `sshare -U $USER`
+  if unsure which.
+- Wiki refs render fine in a browser: docs.alliancecan.ca/wiki/Apptainer and
+  /wiki/Running_jobs.
